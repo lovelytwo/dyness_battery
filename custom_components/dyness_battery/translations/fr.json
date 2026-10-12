@@ -530,6 +530,24 @@
           "upstream_port": "Upstream port",
           "device_model": "Device model"
         }
+      },
+      "reconfigure": {
+        "title": "Dyness Battery – Change data source",
+        "description": "Change where this entry gets battery data. Entity IDs, history and the battery device are kept. The local sources need `logger.dyness.com` to resolve to Home Assistant for the logger (DNS rewrite) and TCP port 5005 reachable.",
+        "data": {
+          "source": "Data source"
+        }
+      },
+      "cloud_keep": {
+        "title": "Dyness Battery – Cloud API",
+        "description": "This entry already has Open API credentials for battery {device_sn}.",
+        "data": {
+          "keep_credentials": "Keep the stored credentials and battery"
+        }
+      },
+      "confirm_replace": {
+        "title": "Dyness Battery – Different battery",
+        "description": "This entry is for battery {stored}, but the Open API account returned {new}. Submit to switch the entry to {new}. Devices of {stored} are not moved and can be removed by hand."
       }
     },
     "error": {
@@ -538,6 +556,10 @@
       "listener_exists": "Another Dyness entry already listens on port 5005. Only one local entry is possible.",
       "invalid_upstream_host": "Enter an IPv4 address or a hostname (not localhost or 127.x).",
       "invalid_port": "Enter a port between 1 and 65535."
+    },
+    "abort": {
+      "already_configured": "This battery is already configured in another entry.",
+      "reconfigure_successful": "The entry was updated and reloaded."
     }
   },
   "options": {
@@ -576,7 +598,11 @@
   "issues": {
     "upstream_unreachable": {
       "title": "Dyness logger upstream unreachable",
-      "description": "The Dyness local listener could not connect to the upstream {host}:{port} {failures} times in a row (last error: {error}). The address may be out of date. Re-add the integration with the current logger server address, or enable 'Answer the logger locally when the upstream is down' in the options."
+      "description": "The Dyness local listener could not connect to the upstream {host}:{port} {failures} times in a row (last error: {error}). The address may be out of date. Open the integration entry, choose Reconfigure and enter the current logger server address, or enable 'Answer the logger locally when the upstream is down' in the options."
+    },
+    "serial_mismatch": {
+      "title": "Dyness logger reports a different battery",
+      "description": "This entry is for battery {stored}, but the logger now reports {received}. The entry keeps {stored}. If the logger was moved to another battery, add a new entry for it or remove this one."
     }
   }
 }

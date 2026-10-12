@@ -1,7 +1,7 @@
 {
   "domain": "dyness_battery",
   "name": "Dyness Battery",
-  "version": "2.6.0-local.1",
+  "version": "2.6.0-local.2",
   "documentation": "https://github.com/lovelytwo/dyness_battery",
   "issue_tracker": "https://github.com/lovelytwo/dyness_battery/issues",
   "dependencies": [],

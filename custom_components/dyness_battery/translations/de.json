@@ -530,6 +530,24 @@
           "upstream_port": "Upstream-Port",
           "device_model": "Gerätemodell"
         }
+      },
+      "reconfigure": {
+        "title": "Dyness Battery – Datenquelle ändern",
+        "description": "Ändert, woher dieser Eintrag die Batteriedaten bekommt. Entitäts-IDs, Verlauf und das Batteriegerät bleiben erhalten. Die lokalen Quellen setzen voraus, dass `logger.dyness.com` für den Logger auf Home Assistant zeigt (DNS-Rewrite) und TCP-Port 5005 erreichbar ist.",
+        "data": {
+          "source": "Datenquelle"
+        }
+      },
+      "cloud_keep": {
+        "title": "Dyness Battery – Cloud-API",
+        "description": "Dieser Eintrag hat bereits Open-API-Zugangsdaten für die Batterie {device_sn}.",
+        "data": {
+          "keep_credentials": "Gespeicherte Zugangsdaten und Batterie behalten"
+        }
+      },
+      "confirm_replace": {
+        "title": "Dyness Battery – Andere Batterie",
+        "description": "Dieser Eintrag gehört zur Batterie {stored}, das Open-API-Konto liefert aber {new}. Absenden stellt den Eintrag auf {new} um. Geräte von {stored} werden nicht übernommen und können manuell entfernt werden."
       }
     },
     "error": {
@@ -538,6 +556,10 @@
       "listener_exists": "Ein anderer Dyness-Eintrag lauscht bereits auf Port 5005. Es ist nur ein lokaler Eintrag möglich.",
       "invalid_upstream_host": "Bitte eine IPv4-Adresse oder einen Hostnamen eingeben (nicht localhost oder 127.x).",
       "invalid_port": "Bitte einen Port zwischen 1 und 65535 eingeben."
+    },
+    "abort": {
+      "already_configured": "Diese Batterie ist bereits in einem anderen Eintrag eingerichtet.",
+      "reconfigure_successful": "Der Eintrag wurde geändert und neu geladen."
     }
   },
   "options": {
@@ -576,7 +598,11 @@
   "issues": {
     "upstream_unreachable": {
       "title": "Dyness-Logger-Upstream nicht erreichbar",
-      "description": "Der lokale Dyness-Listener konnte {failures}-mal hintereinander keine Verbindung zu {host}:{port} aufbauen (letzter Fehler: {error}). Die Adresse ist evtl. veraltet. Integration mit der aktuellen Logger-Server-Adresse neu hinzufügen oder in den Optionen 'Logger lokal beantworten' aktivieren."
+      "description": "Der lokale Dyness-Listener konnte {failures}-mal hintereinander keine Verbindung zu {host}:{port} aufbauen (letzter Fehler: {error}). Die Adresse ist evtl. veraltet. Im Integrationseintrag 'Neu konfigurieren' wählen und die aktuelle Logger-Server-Adresse eintragen oder in den Optionen 'Logger lokal beantworten' aktivieren."
+    },
+    "serial_mismatch": {
+      "title": "Dyness-Logger meldet eine andere Batterie",
+      "description": "Dieser Eintrag gehört zur Batterie {stored}, der Logger meldet jetzt aber {received}. Der Eintrag behält {stored}. Wurde der Logger an eine andere Batterie umgesteckt, dafür einen neuen Eintrag anlegen oder diesen entfernen."
     }
   }
 }

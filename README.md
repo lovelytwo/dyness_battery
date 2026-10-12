@@ -26,6 +26,10 @@ This fork of [shopf/dyness_battery](https://github.com/shopf/dyness_battery) add
 
 **Add a local entry.** Settings → Devices & Services → Add Integration → Dyness Battery, then pick the source. Endpoint and passthru ask for the device model (for a Powerbox Pro choose `POWERBOX-PRO`), because the logger does not send one. Passthru and cloud-and-passthru ask for the upstream server as an IPv4 address or a hostname; addresses seen so far are `47.254.174.207` and `8.211.25.186`. Only one local entry is possible, because they all listen on port 5005.
 
+**Switch an existing entry.** You do not need a second entry. On the integration entry, open the ⋮ menu → **Reconfigure** and pick another source; the same steps as adding an entry follow, with the current values filled in. Entity IDs, history and the battery device are kept, and so are the stored API credentials, so switching back to the cloud API asks no questions. Reconfigure also changes the upstream address or model without switching source. A new local entry learns the battery serial from the first upload and uses the same device identifiers as a cloud entry. Requires Home Assistant 2024.11 or later.
+
+After switching to endpoint or passthru, the Junior Box write controls show as *no longer provided* and the cloud-only sensors as unavailable. They come back when you switch back. To drop them for good, delete them under Settings → Devices & Services → Entities.
+
 **DNS.** Make `logger.dyness.com` resolve to Home Assistant's LAN address **for the logger only**:
 
 - AdGuard Home: Filters → DNS rewrites, or a per-client rule in Filters → Custom filtering rules (`||logger.dyness.com^$client=192.168.1.50,dnsrewrite=192.168.1.10`, logger first, Home Assistant second) so only the logger gets the rewrite.
@@ -39,7 +43,7 @@ This fork of [shopf/dyness_battery](https://github.com/shopf/dyness_battery) add
 
 **Not available locally** (endpoint and passthru): daily and lifetime energy counters, PV, grid, load and inverter sensors, and the Junior Box write controls. If no upload arrives for twice the logger's interval (10 minutes by default), the entities become unavailable until the next upload.
 
-**Upstream down.** Passthru closes the logger connection when the upstream cannot be reached; after five failures in a row a repair issue names the address. The option *Answer the logger locally when the upstream is down* keeps data flowing in that case (those uploads never reach the cloud).
+**Upstream down.** Passthru closes the logger connection when the upstream cannot be reached; after five failures in a row a repair issue names the address. Fix it with Reconfigure. The option *Answer the logger locally when the upstream is down* keeps data flowing in that case (those uploads never reach the cloud).
 
 **Trace (cloud and passthru only).** `config/dyness_cloud_passthru.log` gets one JSON line per frame and per Open API call, plus comparison records of cloud and local values. Login bodies are replaced with `redacted` and the API secret is never written, but the file still contains serial numbers, the logger MAC and LAN address and all telemetry. Do not share it unredacted. It rotates at 10 MB with 5 backups.
 

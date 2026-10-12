@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import UpdateFailed
@@ -25,8 +26,10 @@ from .const import (
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
     DEFAULT_UPSTREAM_PORT,
+    ISSUE_SERIAL_MISMATCH,
     ISSUE_UPSTREAM_UNREACHABLE,
     LOCAL_ONLY_SOURCES,
+    LOCAL_UNIQUE_ID_PREFIX,
     LOGGER_PORT,
     SOURCE_CLOUD_PASSTHRU,
     SOURCE_ENDPOINT,
@@ -78,6 +81,71 @@ async def _own_addresses(hass: HomeAssistant) -> List[str]:
         return [str(ip) for ip in await network.async_get_enabled_source_ips(hass)]
     except Exception:  # noqa: BLE001 - the loop guard still checks loopback and the socket address
         return []
+
+
+def _rename_devices(hass: HomeAssistant, entry: ConfigEntry, old_sn: str, new_sn: str) -> None:
+    """Move the pack and module device identifiers from old_sn to new_sn in place."""
+    registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        renamed = set()
+        for domain, ident in device.identifiers:
+            if domain == DOMAIN and ident == old_sn:
+                ident = new_sn
+            elif domain == DOMAIN and ident.startswith(f"{old_sn}_"):
+                ident = f"{new_sn}{ident[len(old_sn):]}"
+            renamed.add((domain, ident))
+        if renamed == device.identifiers:
+            continue
+        if any(registry.async_get_device(identifiers={i}) not in (None, device) for i in renamed - device.identifiers):
+            _LOGGER.warning("Dyness: device %s already exists, not renaming %s", renamed, device.identifiers)
+            continue
+        registry.async_update_device(device.id, new_identifiers=renamed)
+
+
+@callback
+def async_check_identity(hass: HomeAssistant, entry: ConfigEntry, coordinator, store: LocalStore) -> None:
+    """Learn the battery serial from the first bank frame, or flag a different battery."""
+    bank_sn = store.bank_sn
+    if not bank_sn:
+        return
+    issue_id = f"{ISSUE_SERIAL_MISMATCH}_{entry.entry_id}"
+    stored = entry.data.get("device_sn")
+    if stored:
+        if bank_sn == stored:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
+            return
+        if ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None:
+            _LOGGER.warning(
+                "Dyness: logger reports battery %s but this entry is for %s; keeping %s",
+                bank_sn, stored, stored,
+            )
+        ir.async_create_issue(
+            hass, DOMAIN, issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_SERIAL_MISMATCH,
+            translation_placeholders={"stored": stored, "received": bank_sn},
+        )
+        return
+
+    old_sn = coordinator.device_sn
+    _rename_devices(hass, entry, old_sn, bank_sn)
+    coordinator.device_sn = bank_sn
+    coordinator.dongle_sn = store.logger_serial or coordinator.dongle_sn
+    unique_id = f"{LOCAL_UNIQUE_ID_PREFIX}{bank_sn}"
+    taken = any(
+        other.unique_id == unique_id
+        for other in hass.config_entries.async_entries(DOMAIN)
+        if other.entry_id != entry.entry_id
+    )
+    if taken:
+        _LOGGER.warning("Dyness: battery %s is already configured in another entry", bank_sn)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, "device_sn": bank_sn, "dongle_sn": coordinator.dongle_sn},
+        **({} if taken else {"unique_id": unique_id}),
+    )
+    _LOGGER.info("Dyness: battery serial learned from the logger: %s (was %s)", bank_sn, old_sn)
 
 
 async def async_setup_local_entry(
@@ -163,6 +231,7 @@ async def async_setup_local_entry(
 
     @callback
     def _on_update() -> None:
+        async_check_identity(hass, entry, coordinator, store)
         if local_only:
             hass.async_create_task(coordinator.async_request_refresh())
 
@@ -221,6 +290,7 @@ async def async_unload_local_entry(hass: HomeAssistant, entry: ConfigEntry) -> N
     if runtime is not None:
         await runtime.async_stop(hass)
     ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_UPSTREAM_UNREACHABLE}_{entry.entry_id}")
+    ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_SERIAL_MISMATCH}_{entry.entry_id}")
 
 
 def local_platforms(hass: HomeAssistant, entry: ConfigEntry, default: List[Platform]) -> List[Platform]:

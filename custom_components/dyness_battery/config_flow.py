@@ -22,6 +22,7 @@ from .local.const import (
     CONF_UPSTREAM_PORT,
     DEFAULT_UPSTREAM_PORT,
     LISTENER_SOURCES,
+    LOCAL_UNIQUE_ID_PREFIX,
     SOURCE_CLOUD,
     SOURCE_CLOUD_PASSTHRU,
     SOURCE_ENDPOINT,
@@ -231,12 +232,34 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._region = "europe"
         self._source = SOURCE_CLOUD
         self._upstream: dict = {}
+        self._pending_device: dict | None = None
+
+    @property
+    def _reconfiguring(self) -> bool:
+        return self.source == config_entries.SOURCE_RECONFIGURE
+
+    def _current(self, key, default=None):
+        """Stored value of the entry being reconfigured (default for a new entry)."""
+        if not self._reconfiguring:
+            return default
+        return self._get_reconfigure_entry().data.get(key, default)
+
+    def _other_entries(self):
+        own = self._get_reconfigure_entry().entry_id if self._reconfiguring else None
+        return [e for e in self._async_current_entries() if e.entry_id != own]
 
     def _listener_entry_exists(self) -> bool:
         return any(
             entry.data.get(CONF_SOURCE, SOURCE_CLOUD) in LISTENER_SOURCES
-            for entry in self._async_current_entries()
+            for entry in self._other_entries()
         )
+
+    def _unique_id_taken(self, unique_id: str) -> bool:
+        return any(entry.unique_id == unique_id for entry in self._other_entries())
+
+    async def async_step_reconfigure(self, user_input=None) -> FlowResult:
+        """Bestehenden Eintrag ändern: Quelle, Upstream, Modell oder Zugangsdaten."""
+        return await self.async_step_user(user_input)
 
     async def async_step_user(self, user_input=None) -> FlowResult:
         """Schritt 0: Datenquelle wählen."""
@@ -246,16 +269,16 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if self._source in LISTENER_SOURCES and self._listener_entry_exists():
                 errors["base"] = "listener_exists"
             elif self._source == SOURCE_CLOUD:
-                return await self.async_step_cloud()
+                return await self.async_step_cloud_keep()
             elif self._source == SOURCE_ENDPOINT:
                 return await self.async_step_endpoint()
             else:
                 return await self.async_step_upstream()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="reconfigure" if self._reconfiguring else "user",
             data_schema=vol.Schema({
-                vol.Required(CONF_SOURCE, default=SOURCE_CLOUD): SelectSelector(
+                vol.Required(CONF_SOURCE, default=self._current(CONF_SOURCE, SOURCE_CLOUD)): SelectSelector(
                     SelectSelectorConfig(
                         options=list(SOURCES),
                         mode=SelectSelectorMode.LIST,
@@ -267,7 +290,63 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     def _model_schema(self) -> dict:
-        return {vol.Required(CONF_DEVICE_MODEL, default="POWERBOX-PRO"): vol.In(list(_MODEL_SCHEMA_MAP))}
+        default = self._current(CONF_DEVICE_MODEL, "POWERBOX-PRO")
+        if default not in _MODEL_SCHEMA_MAP:
+            default = "POWERBOX-PRO"
+        return {vol.Required(CONF_DEVICE_MODEL, default=default): vol.In(list(_MODEL_SCHEMA_MAP))}
+
+    async def async_step_cloud_keep(self, user_input=None) -> FlowResult:
+        """Reconfigure: gespeicherte Zugangsdaten und Gerät behalten oder neu eingeben."""
+        stored = {k: self._current(k) for k in ("api_id", "api_secret", "api_base", "device_sn")}
+        if not all(stored.values()):
+            return await self.async_step_cloud()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="cloud_keep",
+                data_schema=vol.Schema({vol.Required("keep_credentials", default=True): bool}),
+                description_placeholders={"device_sn": stored["device_sn"]},
+            )
+        if not user_input["keep_credentials"]:
+            return await self.async_step_cloud()
+        self._api_id = stored["api_id"]
+        self._api_secret = stored["api_secret"]
+        self._api_base = stored["api_base"]
+        return await self._update_cloud_entry({
+            "deviceSn": stored["device_sn"], "collectorSn": self._current("dongle_sn"),
+        })
+
+    async def async_step_confirm_replace(self, user_input=None) -> FlowResult:
+        """Reconfigure: Discovery liefert eine andere Batterie als gespeichert."""
+        if user_input is not None:
+            return await self._update_cloud_entry(self._pending_device, replace=True)
+        return self.async_show_form(
+            step_id="confirm_replace",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "stored": str(self._current("device_sn")),
+                "new": str(self._pending_device.get("deviceSn")),
+            },
+        )
+
+    async def _update_cloud_entry(self, device: dict, replace: bool = False) -> FlowResult:
+        sn = device.get("deviceSn", "")
+        unique_id = f"{self._api_id}_{sn}"
+        if self._unique_id_taken(unique_id):
+            return self.async_abort(reason="already_configured")
+        data_updates = {
+            "api_id":     self._api_id,
+            "api_secret": self._api_secret,
+            "api_base":   self._api_base,
+            "device_sn":  sn,
+            "dongle_sn":  device.get("collectorSn") or None,
+            CONF_SOURCE:  self._source,
+            **self._upstream,
+        }
+        if replace:
+            data_updates["known_module_sns"] = []
+        return self.async_update_reload_and_abort(
+            self._get_reconfigure_entry(), unique_id=unique_id, data_updates=data_updates,
+        )
 
     async def async_step_endpoint(self, user_input=None) -> FlowResult:
         """Lokaler Endpoint: nur Gerätemodell."""
@@ -291,11 +370,16 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self._create_local_entry({
                         **self._upstream, CONF_DEVICE_MODEL: user_input[CONF_DEVICE_MODEL],
                     })
-                return await self.async_step_cloud()
+                return await self.async_step_cloud_keep()
 
         fields = {
-            vol.Required(CONF_UPSTREAM_HOST, default=(user_input or {}).get(CONF_UPSTREAM_HOST, "")): str,
-            vol.Required(CONF_UPSTREAM_PORT, default=DEFAULT_UPSTREAM_PORT): vol.Coerce(int),
+            vol.Required(
+                CONF_UPSTREAM_HOST,
+                default=(user_input or {}).get(CONF_UPSTREAM_HOST, self._current(CONF_UPSTREAM_HOST, "")),
+            ): str,
+            vol.Required(
+                CONF_UPSTREAM_PORT, default=self._current(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
+            ): vol.Coerce(int),
         }
         if self._source == SOURCE_PASSTHRU:
             fields.update(self._model_schema())
@@ -304,6 +388,18 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     def _create_local_entry(self, data: dict) -> FlowResult:
+        if self._reconfiguring:
+            kwargs = {}
+            sn = self._current("device_sn")
+            if sn:
+                kwargs["unique_id"] = f"{LOCAL_UNIQUE_ID_PREFIX}{sn}"
+                if self._unique_id_taken(kwargs["unique_id"]):
+                    return self.async_abort(reason="already_configured")
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(),
+                data_updates={CONF_SOURCE: self._source, **data},
+                **kwargs,
+            )
         titles = {SOURCE_ENDPOINT: "Dyness local endpoint", SOURCE_PASSTHRU: "Dyness local passthru"}
         return self.async_create_entry(
             title=titles[self._source],
@@ -339,9 +435,18 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Mehrere Geräte → Auswahl anbieten
                 return await self.async_step_select_device()
 
+        schema = STEP_USER_DATA_SCHEMA
+        if self._reconfiguring:
+            stored_base = self._current("api_base")
+            region = next((r for r, url in API_REGIONS.items() if url == stored_base), "europe")
+            schema = vol.Schema({
+                vol.Required("api_id", default=self._current("api_id") or ""): str,
+                vol.Required("api_secret"): str,
+                vol.Required("region", default=region): vol.In(["europe", "apac"]),
+            })
         return self.async_show_form(
             step_id="cloud",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=schema,
             errors=errors,
         )
 
@@ -386,6 +491,13 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Legt einen Config Entry für ein Gerät an."""
         sn = device.get("deviceSn", "")
         station_name = device.get("stationName") or "Dyness Battery"
+
+        if self._reconfiguring:
+            stored = self._current("device_sn")
+            if stored and sn != stored:
+                self._pending_device = device
+                return await self.async_step_confirm_replace()
+            return await self._update_cloud_entry(device)
 
         # unique_id = api_id + deviceSN → jedes Gerät separat konfigurierbar
         await self.async_set_unique_id(f"{self._api_id}_{sn}")

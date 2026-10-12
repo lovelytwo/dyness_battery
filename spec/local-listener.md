@@ -95,7 +95,7 @@ There is no default upstream address. Addresses seen in captures (`47.254.174.20
 
 If the upstream connection fails, or closes, the listener closes the logger socket as well. It does not answer that session locally. The logger retries on its own.
 
-Two upstream addresses have already been observed, so the configured address can go stale. After five consecutive failed upstream connects, the entry raises a Home Assistant repair issue naming `upstream_host`. The issue clears on the next successful connect.
+Two upstream addresses have already been observed, so the configured address can go stale. After five consecutive failed upstream connects, the entry raises a Home Assistant repair issue naming `upstream_host`. The fix is the entry's Reconfigure action, changing `upstream_host` (see Changing an existing entry). The issue clears on the next successful connect.
 
 `fallback_to_endpoint` is an optional entry option, off by default. When it is on and the upstream connect fails, the listener answers that session using the endpoint replies above, so Home Assistant keeps receiving data. Those uploads never reach the cloud.
 
@@ -109,7 +109,11 @@ Config keys for a passthru entry:
 | `upstream_host` | yes | IPv4 address or hostname |
 | `upstream_port` | no | integer, default `5005` |
 | `device_model` | yes | model key, see Sensors |
+| `device_sn` | no | bank measurement name, learned from the first upload (see Device identity) |
+| `dongle_sn` | no | logger serial from the frame header, learned from the first upload |
 | `fallback_to_endpoint` | no | boolean option, default off |
+
+`endpoint` entries use the same keys without `upstream_host` and `upstream_port`.
 
 ## Cloud and passthru
 
@@ -130,7 +134,7 @@ Config keys:
 | `device_sn` | yes | device selected by the existing discovery step |
 | `dongle_sn` | no | collector serial when discovery provides one |
 
-The config flow collects `upstream_host` and `upstream_port`, then continues through the existing API credential, region, and device-selection steps. The model comes from cloud discovery (`deviceModelName`), as it does for `cloud` entries. The same rejection rules apply: a missing `upstream_host`, or one that is neither an IPv4 address nor a valid hostname, is rejected.
+The config flow collects `upstream_host` and `upstream_port`, then continues through the existing API credential, region, and device-selection steps. The same steps are available from the Reconfigure action, so an existing `cloud` entry can become `cloud_passthru` in place. The model comes from cloud discovery (`deviceModelName`), as it does for `cloud` entries. The same rejection rules apply: a missing `upstream_host`, or one that is neither an IPv4 address nor a valid hostname, is rejected.
 
 ### Merge rule
 
@@ -150,11 +154,66 @@ The current user step asks for `api_id`, `api_secret`, and `region`, then discov
 
 `endpoint` and `passthru` add a model step. It is a select over the keys of `_MODEL_SCHEMA_MAP` in [`custom_components/dyness_battery/__init__.py`](../custom_components/dyness_battery/__init__.py), stored as `device_model`. Schema detection then runs on that value exactly as it runs on `deviceModelName` for cloud entries. A model is required because the logger does not send one, and the point fallback in `_detect_schema` returns `SCHEMA_JUNIOR` whenever point `800` is present. The bank summary frames in the captures include `800`.
 
-`async_setup_entry` branches on `source` (entries without the key are `cloud`). `cloud` runs upstream’s setup unchanged. The other sources go through `local/ha.py`: `cloud_passthru` constructs `DynessDataCoordinator` with the API credentials; `endpoint` and `passthru` construct it with placeholder credentials and the entry ID as `device_sn`, so the device identifier is stable before the first upload. All three bind `_call` to the local responder (see Local responder) and start the TCP listener. `endpoint` and `passthru` do not call `async_config_entry_first_refresh`; entities appear unavailable until the first upload cycle completes.
+`async_setup_entry` branches on `source` (entries without the key are `cloud`). `cloud` runs upstream’s setup unchanged. The other sources go through `local/ha.py`: `cloud_passthru` constructs `DynessDataCoordinator` with the API credentials; `endpoint` and `passthru` construct it with placeholder credentials and the stored `device_sn`, or, before the battery serial is known, the entry ID as a temporary identifier (see Device identity below). All three bind `_call` to the local responder (see Local responder) and start the TCP listener. `endpoint` and `passthru` do not call `async_config_entry_first_refresh`; entities appear unavailable until the first upload cycle completes.
 
 Cloud write platforms stay registered for `cloud` and `cloud_passthru`. `endpoint` and `passthru` forward only the sensor platform and do not register the write services.
 
 Only one entry with a listener source (`endpoint`, `passthru`, `cloud_passthru`) can exist, because they all bind port 5005; the config flow rejects a second one. If the port is already taken at startup, setup raises `ConfigEntryNotReady` and Home Assistant retries.
+
+### Device identity
+
+The logger sends the serials the cloud uses. The bank measurement name (for example `R07E944668050216-BMS`) is the cloud's `deviceSn`, and the frame-header serial (`R07E944668050216`) is the cloud's `collectorSn`. Every source therefore uses `deviceSn` as the pack device identifier and `{deviceSn}_{board serial}` for module devices, as upstream does. Device names come from `stationName` or "Dyness Battery", and entity names from translation keys, so neither changes with the source.
+
+- **Cloud entry switched to a local source.** `entry.data` already holds `device_sn`, so the pack and module devices stay as they are.
+- **New local entry.** Before the first upload the serial is unknown. Platforms must be loaded during setup, so the pack device is first created with the entry ID as a temporary identifier. When the first upload cycle with a bank frame completes, before the coordinator refresh that adds module entities, the entry stores `device_sn` (bank measurement name) and `dongle_sn` (logger serial) in `entry.data`, and renames the pack and every module device identifier in place with the device registry's `async_update_device(new_identifiers=...)`. No device is orphaned, and from then on the identifiers match what cloud discovery returns.
+- **Local entry switched to `cloud` or `cloud_passthru`.** Discovery returns the same `deviceSn`, so nothing changes. If discovery returns a different serial (a different battery on that account), the reconfigure asks for confirmation before replacing it.
+- **Serial mismatch.** If a local entry with a stored `device_sn` receives uploads with a different bank name (logger swapped, or moved to another battery), the entry keeps its stored serial, logs a warning and raises a repair issue. Devices are not renamed silently.
+- **Unique ID.** `cloud` and `cloud_passthru` entries use `{api_id}_{device_sn}`, as upstream does. Local entries set `local_{device_sn}` once the serial is known, so the same battery cannot be added twice.
+
+### Changing an existing entry
+
+An existing entry is changed with Home Assistant's **Reconfigure** action (`async_step_reconfigure` and `async_update_reload_and_abort`, Home Assistant 2024.11 or later), not by adding a second entry. It updates `entry.data` and reloads the entry. Entity unique IDs are `{entry_id}_{key}` and `{entry_id}_{module}_{key}`, and the entry ID does not change, so every entity ID and its history carry over.
+
+Reconfigure reuses the add-entry steps, starting at the source choice, with the current values filled in:
+
+- `cloud`: credentials, region, then device discovery. When credentials and `device_sn` are already stored, the step offers to keep them without asking again.
+- `endpoint`: device model.
+- `passthru`: upstream host, upstream port, device model.
+- `cloud_passthru`: upstream host and port, then credentials and discovery.
+
+Keeping the current source and changing only the upstream host, port or model follows the same path. This is how the "upstream unreachable" repair is fixed in place.
+
+What is kept in `entry.data`:
+
+- API credentials, `api_base`, `device_sn`, `dongle_sn` and `known_module_sns` are kept when switching to `endpoint` or `passthru`. Local sources do not use the credentials, but switching back to `cloud` then needs no new entry.
+- `upstream_host`, `upstream_port` and `device_model` are kept when switching to `cloud`, and are shown again when their source is chosen later.
+- Options (`battery_capacity_override`, `alarm_delay_minutes`, `fallback_to_endpoint`, `capture_unknown_raw`) are not touched.
+
+Rules:
+
+- The single port-5005 rule ignores the entry being reconfigured.
+- `upstream_host` validation and the `device_model` requirement are the same as for a new entry.
+- After reconfiguring to `cloud` or `cloud_passthru`, the unique ID becomes `{api_id}_{device_sn}`. If another entry already uses it, the reconfigure is aborted.
+
+Entities after a switch:
+
+- Switching to `endpoint` or `passthru` stops loading the number, select, switch, time and button platforms. Their entities stay in the registry and Home Assistant shows them as no longer provided.
+- Cloud-only sensors (daily and lifetime energy, PV, grid, load) become unavailable.
+- Nothing is deleted automatically, so switching back restores them. The README explains how to remove them by hand.
+
+`hacs.json` sets the minimum Home Assistant version to 2024.11.0, the first release with reconfigure flows in this form.
+
+```mermaid
+flowchart LR
+  entry[ExistingEntry] --> reconf["Reconfigure: source step"]
+  reconf --> cloudStep[CredentialsAndDiscovery]
+  reconf --> endpointStep[DeviceModel]
+  reconf --> upstreamStep[UpstreamHostPort]
+  upstreamStep --> cloudStep
+  upstreamStep --> endpointStep
+  cloudStep --> update["update entry.data, reload"]
+  endpointStep --> update
+```
 
 ## Parsing and devices
 
@@ -277,7 +336,7 @@ All Open API requests go through `DynessDataCoordinator._call` in `__init__.py` 
 | `listener.py` | asyncio TCP server, endpoint replies, passthru relay with hostname resolution and loop guard, `fallback_to_endpoint` |
 | `responder.py` | cloud-shaped answers for `_call`, `cloud_passthru` merge rule and `compare` records |
 | `trace.py` | JSON trace writer, rotation through a queue thread, redaction |
-| `ha.py` | Home Assistant glue: coordinator construction, responder binding, repair issue, stale check, unload |
+| `ha.py` | Home Assistant glue: coordinator construction, responder binding, serial learning and device rename, repair issues, stale check, unload |
 | `point_names.json` | copy of `reverse-engineering/cloud_point_names.json`, read at runtime for trace labels |
 
 Only `ha.py` imports Home Assistant. Upstream files change only where needed: `async_setup_entry` / `async_unload_entry` in `__init__.py`, the config and options flow, strings and translations, and the manifest.
@@ -288,7 +347,7 @@ Tests (upstream has none):
 
 - `tests/test_*.py` need only pytest and Python 3.9+. Fixtures are hand-built, sanitized frames (`tests/frames.py`) with a made-up serial. No capture bytes and no login bodies.
 - They cover framing, typed fields, bitmask expansion, `00 77` CRC and clock decode, endpoint reply bytes, upload cycles and duplicates, freshness, `createTime`, the responder’s JSON, and the merge rule.
-- `tests/ha/` runs with `pytest-homeassistant-custom-component` installed (Python 3.13+). It covers the config flow paths and sets up `endpoint` and `cloud_passthru` entries end to end over a real TCP socket, checking sensor states, the repair issue, the trace file, and unload.
+- `tests/ha/` runs with `pytest-homeassistant-custom-component` installed (Python 3.13+). It covers the config flow paths and sets up `endpoint` and `cloud_passthru` entries end to end over a real TCP socket, checking sensor states, the repair issue, the trace file, and unload. `test_reconfigure.py` covers source switches, kept credentials, the guards, serial learning and the mismatch repair.
 - `tools/dyness_local_runner.py` runs the listener outside Home Assistant. `tools/dyness_replay.py` replays the logger side of a classic PCAP against it and checks the replies to every frame.
 
 ## Manifest and fork identity
@@ -324,5 +383,9 @@ Still open, tracked in the protocol notes:
 - Local and cloud responses produce the same sensor keys, because both run through upstream’s unchanged mapping.
 - Login material is omitted from logs and stored state. In the `cloud_passthru` trace the login body is the marker `redacted`.
 - An existing cloud config entry still polls the Open API.
+- Reconfiguring a cloud entry to `cloud_passthru`, `endpoint` or `passthru` keeps every entity ID and the pack device.
+- A new local entry's pack and module devices carry the same identifiers as a cloud entry for that battery from the first upload on, with no orphaned device.
+- Switching back to `cloud` needs no credential entry when the credentials are stored.
+- Reconfigure is refused when it would create a second port-5005 entry or a duplicate cloud unique ID.
 - A `cloud_passthru` entry writes each Open API request and response, each local frame with its `status`, and one `compare` record per realtime poll to `dyness_cloud_passthru.log`.
 - `00 77` command `0x1303` and its `91 87` appear with `status` `opaque`, full body hex, and decoded tunnel fields. Clock-set `0x12F8` appears as `parsed` with the decoded time. Unrecognised frames appear with `status` `unknown` and full frame hex unless `capture_unknown_raw` is off.

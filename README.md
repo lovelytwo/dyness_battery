@@ -1,13 +1,49 @@
 # Dyness Battery – Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/release/shopf/dyness_battery.svg)](https://github.com/shopf/dyness_battery/releases)
+[![GitHub Release](https://img.shields.io/github/release/lovelytwo/dyness_battery.svg)](https://github.com/lovelytwo/dyness_battery/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Eine Community-Integration für Home Assistant für **Dyness Batteriespeicher** über die Dyness Cloud API.
 
 > **Hinweis / Note:** Diese Integration nutzt die Dyness Open API (Cloud). Eine Internetverbindung ist erforderlich. Daten werden alle 5 Minuten aktualisiert (API-Limit).\
 > This integration uses the Dyness Open API (Cloud). An internet connection is required. Data is updated every 5 minutes (API limit).
+
+---
+
+## Local logger sources (this fork)
+
+This fork of [shopf/dyness_battery](https://github.com/shopf/dyness_battery) adds three sources that read the Wi-Fi logger directly. The logger uploads plaintext TCP to `logger.dyness.com` port **5005** about every 300 seconds; when that name resolves to Home Assistant, the integration receives each upload as it happens. Design and protocol notes: [`spec/local-listener.md`](spec/local-listener.md) and [`reverse-engineering/`](reverse-engineering/).
+
+| Source | What it does | Cloud still gets data | Needs API credentials |
+|---|---|---|---|
+| Cloud API | upstream behaviour, Open API poll every 5–15 minutes | yes | yes |
+| Local endpoint | Home Assistant answers the logger itself | no | no |
+| Local passthru | relays the logger connection to the real Dyness server and parses a copy | yes | no |
+| Cloud and passthru | passthru plus the cloud poll; fresh local values win; writes a full traffic trace | yes | yes |
+
+**Install.** The fork keeps the domain `dyness_battery`, so it replaces upstream rather than running beside it. Existing cloud entries and entity IDs carry over. Remove the upstream repository from HACS first, then add `https://github.com/lovelytwo/dyness_battery` as a custom repository (category Integration). The manifest says `local_push`; cloud entries still poll every five minutes.
+
+**Add a local entry.** Settings → Devices & Services → Add Integration → Dyness Battery, then pick the source. Endpoint and passthru ask for the device model (for a Powerbox Pro choose `POWERBOX-PRO`), because the logger does not send one. Passthru and cloud-and-passthru ask for the upstream server as an IPv4 address or a hostname; addresses seen so far are `47.254.174.207` and `8.211.25.186`. Only one local entry is possible, because they all listen on port 5005.
+
+**DNS.** Make `logger.dyness.com` resolve to Home Assistant's LAN address **for the logger only**:
+
+- AdGuard Home: Filters → DNS rewrites, or a per-client rule in Filters → Custom filtering rules (`||logger.dyness.com^$client=192.168.1.50,dnsrewrite=192.168.1.10`, logger first, Home Assistant second) so only the logger gets the rewrite.
+- Pi-hole, a router DNS override, or a DHCP-assigned DNS server for the logger work the same way.
+- For passthru, Home Assistant itself must still reach the real server. Enter an IP address, or a hostname that resolves to the real server for Home Assistant (with a per-client rule, Home Assistant keeps the real answer). A hostname that resolves to Home Assistant is refused at connect time, so the relay cannot loop.
+- The logger only reconnects after its current session ends; power-cycling the logger makes it pick up the new address straight away.
+
+**Networking.** TCP port 5005 must reach Home Assistant. Home Assistant OS and Supervised need nothing extra. In Docker, use `network_mode: host` or publish `5005:5005/tcp`. Allow 5005 inbound if a firewall runs on the host.
+
+**Capacity.** The logger sends no station capacity. Set the option *Battery Capacity Override (kWh)* to get usable and remaining kWh. Do not derive it from the board amp-hour fields: on some systems they are misreported (two 100 Ah modules in one battery each report about 200 Ah).
+
+**Not available locally** (endpoint and passthru): daily and lifetime energy counters, PV, grid, load and inverter sensors, and the Junior Box write controls. If no upload arrives for twice the logger's interval (10 minutes by default), the entities become unavailable until the next upload.
+
+**Upstream down.** Passthru closes the logger connection when the upstream cannot be reached; after five failures in a row a repair issue names the address. The option *Answer the logger locally when the upstream is down* keeps data flowing in that case (those uploads never reach the cloud).
+
+**Trace (cloud and passthru only).** `config/dyness_cloud_passthru.log` gets one JSON line per frame and per Open API call, plus comparison records of cloud and local values. Login bodies are replaced with `redacted` and the API secret is never written, but the file still contains serial numbers, the logger MAC and LAN address and all telemetry. Do not share it unredacted. It rotates at 10 MB with 5 backups.
+
+**Testing without Home Assistant.** `python3 tools/dyness_local_runner.py --port 15005` runs the listener on its own; `python3 tools/dyness_replay.py capture.pcap --port 15005` replays the logger side of a capture against it. `pytest` runs the protocol, store and responder tests (Python 3.9+, no Home Assistant needed); with `pytest-homeassistant-custom-component` installed it also runs the tests in `tests/ha/`.
 
 ---
 
@@ -127,13 +163,13 @@ Geräte mit mehreren Modulen (DL5.0C, Stack100, PowerBox Pro, Tower T14, Tower P
 
 1. Öffne HACS in Home Assistant
 2. Klicke auf **Integrationen** → **⋮** → **Benutzerdefinierte Repositories**
-3. Repository-URL: `https://github.com/shopf/dyness_battery` — Kategorie: **Integration**
+3. Repository-URL: `https://github.com/lovelytwo/dyness_battery` — Kategorie: **Integration**
 4. Suche nach **Dyness Battery** und installiere
 5. Home Assistant neu starten
 
 #### Manuelle Installation
 
-1. Lade die ZIP von [Releases](https://github.com/shopf/dyness_battery/releases) herunter
+1. Lade die ZIP von [Releases](https://github.com/lovelytwo/dyness_battery/releases) herunter
 2. Entpacke und kopiere `custom_components/dyness_battery/` nach `config/custom_components/`
 3. Home Assistant neu starten
 
@@ -276,13 +312,13 @@ Devices with multiple modules (DL5.0C, Stack100, PowerBox Pro, Tower T14, Tower 
 
 1. Open HACS in Home Assistant
 2. Click **Integrations** → **⋮** → **Custom repositories**
-3. Add URL: `https://github.com/shopf/dyness_battery` — Category: **Integration**
+3. Add URL: `https://github.com/lovelytwo/dyness_battery` — Category: **Integration**
 4. Search for **Dyness Battery** and install
 5. Restart Home Assistant
 
 #### Manual Installation
 
-1. Download the ZIP from [Releases](https://github.com/shopf/dyness_battery/releases)
+1. Download the ZIP from [Releases](https://github.com/lovelytwo/dyness_battery/releases)
 2. Extract and copy `custom_components/dyness_battery/` to `config/custom_components/`
 3. Restart Home Assistant
 
@@ -333,7 +369,7 @@ Endpoints used:
 | | |
 |---|---|
 | 💬 **Questions & Ideas** | [GitHub Discussions](https://github.com/shopf/dyness_battery/discussions) |
-| 🐛 **Bug Reports** | [GitHub Issues](https://github.com/shopf/dyness_battery/issues) |
+| 🐛 **Bug Reports** | [GitHub Issues](https://github.com/lovelytwo/dyness_battery/issues) |
 | 🔌 **New Device** | Open an Issue with your `dyness_test.py` output |
 
 ---

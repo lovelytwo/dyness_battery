@@ -1,14 +1,68 @@
 """Config Flow für Dyness Battery Integration."""
+import ipaddress
+import re
+from pathlib import Path
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
-from . import DOMAIN, _BMS_SUFFIXES, _is_success
+from . import DOMAIN, _BMS_SUFFIXES, _MODEL_SCHEMA_MAP, _is_success
+from .local.const import (
+    CONF_CAPTURE_UNKNOWN_RAW,
+    CONF_DEVICE_MODEL,
+    CONF_FALLBACK_TO_ENDPOINT,
+    CONF_SOURCE,
+    CONF_UPSTREAM_HOST,
+    CONF_UPSTREAM_PORT,
+    DEFAULT_UPSTREAM_PORT,
+    LISTENER_SOURCES,
+    SOURCE_CLOUD,
+    SOURCE_CLOUD_PASSTHRU,
+    SOURCE_ENDPOINT,
+    SOURCE_PASSTHRU,
+    SOURCES,
+    UPSTREAM_SOURCES,
+)
 import hashlib
 import hmac
 import base64
 import aiohttp
 from email.utils import formatdate
+
+_HOSTNAME_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+def _valid_upstream_host(value: str) -> bool:
+    """IPv4 address (not loopback/unspecified) or an RFC 1123 hostname."""
+    value = (value or "").strip()
+    if not value:
+        return False
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        return ip.version == 4 and not ip.is_loopback and not ip.is_unspecified
+    if re.fullmatch(r"[0-9.]+", value) or len(value) > 253:
+        return False
+    labels = value.rstrip(".").split(".")
+    return value.lower() != "localhost" and all(_HOSTNAME_LABEL.match(label) for label in labels)
+
+
+async def _trace_discovery(hass, path: str, response) -> None:
+    """Write a cloud_passthru discovery call to the trace file."""
+    from .local.trace import TRACE_FILENAME, Trace
+
+    trace = Trace(Path(hass.config.path(TRACE_FILENAME)), "config_flow")
+    await hass.async_add_executor_job(trace.open)
+    trace.api(path, {}, response)
+    await hass.async_add_executor_job(trace.close)
 
 # API Domains je Region
 API_REGIONS = {
@@ -32,7 +86,8 @@ def _build_headers_cf(api_id, api_secret, body, path):
     }
 
 
-async def _fetch_device_list(api_id: str, api_secret: str, api_base: str) -> list:
+async def _fetch_device_list(api_id: str, api_secret: str, api_base: str,
+                             on_response=None) -> list:
     """Gibt alle Geräte auf dem Account zurück."""
     path = "/v1/device/storage/list"
     url = f"{api_base}/openapi/ems-device{path}"
@@ -45,6 +100,8 @@ async def _fetch_device_list(api_id: str, api_secret: str, api_base: str) -> lis
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 result = await resp.json(content_type=None)
+                if on_response is not None:
+                    await on_response(path, result)
                 if _is_success(result):
                     return (result.get("data", {}) or {}).get("list", [])
     except Exception:
@@ -113,7 +170,7 @@ class DynessOptionsFlow(config_entries.OptionsFlow):
             prefill.get("battery_capacity_override", "")
             or self.config_entry.options.get("battery_capacity_override", "")
         )
-        return vol.Schema({
+        fields = {
             vol.Required(
                 "alarm_delay_minutes",
                 default=current_delay,
@@ -124,7 +181,25 @@ class DynessOptionsFlow(config_entries.OptionsFlow):
                 "battery_capacity_override",
                 description={"suggested_value": current_cap},
             ): str,
-        })
+        }
+        source = self.config_entry.data.get(CONF_SOURCE, SOURCE_CLOUD)
+        if source in UPSTREAM_SOURCES:
+            fields[vol.Required(
+                CONF_FALLBACK_TO_ENDPOINT,
+                default=bool(prefill.get(
+                    CONF_FALLBACK_TO_ENDPOINT,
+                    self.config_entry.options.get(CONF_FALLBACK_TO_ENDPOINT, False),
+                )),
+            )] = bool
+        if source == SOURCE_CLOUD_PASSTHRU:
+            fields[vol.Required(
+                CONF_CAPTURE_UNKNOWN_RAW,
+                default=bool(prefill.get(
+                    CONF_CAPTURE_UNKNOWN_RAW,
+                    self.config_entry.options.get(CONF_CAPTURE_UNKNOWN_RAW, True),
+                )),
+            )] = bool
+        return vol.Schema(fields)
 
 
 STEP_USER_DATA_SCHEMA = vol.Schema({
@@ -154,8 +229,88 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._api_base = None
         self._devices = []      # alle gefundenen Geräte
         self._region = "europe"
+        self._source = SOURCE_CLOUD
+        self._upstream: dict = {}
+
+    def _listener_entry_exists(self) -> bool:
+        return any(
+            entry.data.get(CONF_SOURCE, SOURCE_CLOUD) in LISTENER_SOURCES
+            for entry in self._async_current_entries()
+        )
 
     async def async_step_user(self, user_input=None) -> FlowResult:
+        """Schritt 0: Datenquelle wählen."""
+        errors = {}
+        if user_input is not None:
+            self._source = user_input[CONF_SOURCE]
+            if self._source in LISTENER_SOURCES and self._listener_entry_exists():
+                errors["base"] = "listener_exists"
+            elif self._source == SOURCE_CLOUD:
+                return await self.async_step_cloud()
+            elif self._source == SOURCE_ENDPOINT:
+                return await self.async_step_endpoint()
+            else:
+                return await self.async_step_upstream()
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SOURCE, default=SOURCE_CLOUD): SelectSelector(
+                    SelectSelectorConfig(
+                        options=list(SOURCES),
+                        mode=SelectSelectorMode.LIST,
+                        translation_key=CONF_SOURCE,
+                    )
+                ),
+            }),
+            errors=errors,
+        )
+
+    def _model_schema(self) -> dict:
+        return {vol.Required(CONF_DEVICE_MODEL, default="POWERBOX-PRO"): vol.In(list(_MODEL_SCHEMA_MAP))}
+
+    async def async_step_endpoint(self, user_input=None) -> FlowResult:
+        """Lokaler Endpoint: nur Gerätemodell."""
+        if user_input is not None:
+            return self._create_local_entry({CONF_DEVICE_MODEL: user_input[CONF_DEVICE_MODEL]})
+        return self.async_show_form(step_id="endpoint", data_schema=vol.Schema(self._model_schema()))
+
+    async def async_step_upstream(self, user_input=None) -> FlowResult:
+        """Passthru / Cloud+Passthru: Upstream-Adresse (IPv4 oder Hostname)."""
+        errors = {}
+        if user_input is not None:
+            host = str(user_input.get(CONF_UPSTREAM_HOST, "")).strip()
+            port = user_input.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT)
+            if not _valid_upstream_host(host):
+                errors[CONF_UPSTREAM_HOST] = "invalid_upstream_host"
+            if not (1 <= int(port) <= 65535):
+                errors[CONF_UPSTREAM_PORT] = "invalid_port"
+            if not errors:
+                self._upstream = {CONF_UPSTREAM_HOST: host, CONF_UPSTREAM_PORT: int(port)}
+                if self._source == SOURCE_PASSTHRU:
+                    return self._create_local_entry({
+                        **self._upstream, CONF_DEVICE_MODEL: user_input[CONF_DEVICE_MODEL],
+                    })
+                return await self.async_step_cloud()
+
+        fields = {
+            vol.Required(CONF_UPSTREAM_HOST, default=(user_input or {}).get(CONF_UPSTREAM_HOST, "")): str,
+            vol.Required(CONF_UPSTREAM_PORT, default=DEFAULT_UPSTREAM_PORT): vol.Coerce(int),
+        }
+        if self._source == SOURCE_PASSTHRU:
+            fields.update(self._model_schema())
+        return self.async_show_form(
+            step_id="upstream", data_schema=vol.Schema(fields), errors=errors,
+        )
+
+    def _create_local_entry(self, data: dict) -> FlowResult:
+        titles = {SOURCE_ENDPOINT: "Dyness local endpoint", SOURCE_PASSTHRU: "Dyness local passthru"}
+        return self.async_create_entry(
+            title=titles[self._source],
+            data={CONF_SOURCE: self._source, **data},
+        )
+
+    async def async_step_cloud(self, user_input=None) -> FlowResult:
         """Schritt 1: API-Zugangsdaten + Region."""
         errors = {}
 
@@ -165,8 +320,13 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._region     = user_input["region"]
             self._api_base   = API_REGIONS[self._region]
 
+            on_response = None
+            if self._source == SOURCE_CLOUD_PASSTHRU:
+                async def on_response(path, result):
+                    await _trace_discovery(self.hass, path, result)
+
             device_list = await _fetch_device_list(
-                self._api_id, self._api_secret, self._api_base
+                self._api_id, self._api_secret, self._api_base, on_response
             )
             self._devices = _select_bms_devices(device_list)
 
@@ -180,7 +340,7 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_select_device()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="cloud",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
         )
@@ -239,6 +399,8 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "api_base":   self._api_base,
                 "device_sn":  sn,
                 "dongle_sn":  device.get("collectorSn") or None,
+                CONF_SOURCE:  self._source,
+                **self._upstream,
             },
         )
 
@@ -259,6 +421,8 @@ class DynessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "api_base":   API_REGIONS.get(region, API_REGIONS["europe"]),
                     "device_sn":  sn,
                     "dongle_sn":  user_input.get("dongle_sn") or None,
+                    CONF_SOURCE:  self._source,
+                    **self._upstream,
                 },
             )
 

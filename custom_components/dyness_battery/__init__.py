@@ -654,21 +654,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ── Veraltete Entitäten aus der Entity-Registry entfernen ────────────────
     await _async_cleanup_stale_entities(hass, entry)
 
-    coordinator = DynessDataCoordinator(
-        hass,
-        entry.data["api_id"],
-        entry.data["api_secret"],
-        entry.data["api_base"],
-        device_sn=entry.data.get("device_sn"),
-        dongle_sn=entry.data.get("dongle_sn"),
-        config_entry=entry,
-    )
-    await coordinator.async_config_entry_first_refresh()
+    from .local.const import CONF_SOURCE, LOCAL_ONLY_SOURCES, SOURCE_CLOUD
+    source = entry.data.get(CONF_SOURCE, SOURCE_CLOUD)
+    platforms = PLATFORMS
+    if source == SOURCE_CLOUD:
+        coordinator = DynessDataCoordinator(
+            hass,
+            entry.data["api_id"],
+            entry.data["api_secret"],
+            entry.data["api_base"],
+            device_sn=entry.data.get("device_sn"),
+            dongle_sn=entry.data.get("dongle_sn"),
+            config_entry=entry,
+        )
+        await coordinator.async_config_entry_first_refresh()
+    else:
+        from .local.ha import async_setup_local_entry
+        coordinator, platforms = await async_setup_local_entry(
+            hass, entry, DynessDataCoordinator, PLATFORMS
+        )
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    from .services import async_setup_services
-    await async_setup_services(hass)
+    await hass.config_entries.async_forward_entry_setups(entry, platforms)
+    if source not in LOCAL_ONLY_SOURCES:
+        from .services import async_setup_services
+        await async_setup_services(hass)
     return True
 
 
@@ -704,8 +714,12 @@ async def _async_cleanup_stale_entities(hass: HomeAssistant, entry: ConfigEntry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    from .local.ha import async_unload_local_entry, local_platforms
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        entry, local_platforms(hass, entry, PLATFORMS)
+    )
     if unload_ok:
+        await async_unload_local_entry(hass, entry)
         hass.data[DOMAIN].pop(entry.entry_id)
         # Services sind domain-weit (nicht per Entry) — erst entfernen wenn
         # kein weiterer Entry mehr aktiv ist, damit andere Geräte sie noch nutzen können.

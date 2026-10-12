@@ -488,15 +488,6 @@
           "device_sn": "Dispositivo"
         }
       },
-      "user": {
-        "title": "Dyness Battery",
-        "description": "Introduza as suas credenciais da API Dyness. Selecione a sua região e o dispositivo será detetado automaticamente.",
-        "data": {
-          "api_id": "ID de API",
-          "api_secret": "Chave Secreta de API",
-          "region": "Região"
-        }
-      },
       "manual": {
         "title": "Dyness Battery – Configuração Manual",
         "description": "Introduza as suas credenciais de API, região e números de série do dispositivo.",
@@ -507,11 +498,46 @@
           "device_sn": "SN da Bateria (ex. R07ABCDEF123456-BMS)",
           "dongle_sn": "SN do Dongle (opcional)"
         }
+      },
+      "cloud": {
+        "title": "Dyness Battery",
+        "description": "Introduza as suas credenciais da API Dyness. Selecione a sua região e o dispositivo será detetado automaticamente.",
+        "data": {
+          "api_id": "ID de API",
+          "api_secret": "Chave Secreta de API",
+          "region": "Região"
+        }
+      },
+      "user": {
+        "title": "Dyness Battery – Data source",
+        "description": "Choose where Home Assistant gets battery data. The local sources need `logger.dyness.com` to resolve to Home Assistant for the logger (DNS rewrite) and TCP port 5005 reachable.",
+        "data": {
+          "source": "Data source"
+        }
+      },
+      "endpoint": {
+        "title": "Dyness Battery – Local endpoint",
+        "description": "Home Assistant answers the logger itself. Uploads do not reach the Dyness cloud.",
+        "data": {
+          "device_model": "Device model"
+        }
+      },
+      "upstream": {
+        "title": "Dyness Battery – Upstream server",
+        "description": "Where the relay forwards the logger connection: the real Dyness logger server, as an IPv4 address or a hostname. A hostname must not resolve to Home Assistant (use a per-client DNS rule, for example in AdGuard Home).",
+        "data": {
+          "upstream_host": "Upstream host (IPv4 or hostname)",
+          "upstream_port": "Upstream port",
+          "device_model": "Device model"
+        }
       }
     },
     "error": {
       "discovery_failed": "Não foi possível detetar o dispositivo automaticamente. Utilize a configuração manual.",
-      "device_not_found": "Dispositivo selecionado não encontrado. Por favor, tente novamente."
+      "device_not_found": "Dispositivo selecionado não encontrado. Por favor, tente novamente.",
+      "listener_exists": "Another Dyness entry already listens on port 5005. Only one local entry is possible.",
+      "invalid_upstream_host": "Enter an IPv4 address or a hostname (not localhost or 127.x).",
+      "invalid_port": "Enter a port between 1 and 65535."
     }
   },
   "options": {
@@ -521,16 +547,36 @@
         "description": "Configure o comportamento da integração.",
         "data": {
           "alarm_delay_minutes": "Atraso de notificação de alarme",
-          "battery_capacity_override": "Substituição de Capacidade da Bateria (kWh)"
+          "battery_capacity_override": "Substituição de Capacidade da Bateria (kWh)",
+          "fallback_to_endpoint": "Answer the logger locally when the upstream is down",
+          "capture_unknown_raw": "Keep raw hex of unknown frames in the trace"
         },
         "data_description": {
           "alarm_delay_minutes": "Duração mínima que um alarme deve estar ativo antes de ser acionada uma notificação do Home Assistant. Use para suprimir eventos transitórios (ex. alarmes de balanceamento a 100% SOC).",
-          "battery_capacity_override": "Opcional. Introduza a capacidade física total da bateria em kWh para substituir o valor calculado pela API. Deixe vazio para cálculo automático."
+          "battery_capacity_override": "Opcional. Introduza a capacidade física total da bateria em kWh para substituir o valor calculado pela API. Deixe vazio para cálculo automático.",
+          "fallback_to_endpoint": "Keeps Home Assistant receiving data while the upstream is unreachable. Those uploads never reach the cloud.",
+          "capture_unknown_raw": "Unknown frames could contain credentials in a layout nobody has seen yet. Turn off to log only opcode and length."
         }
       }
     },
     "error": {
       "invalid_capacity": "Introduza um número positivo (ex. 20.48) ou deixe vazio."
+    }
+  },
+  "selector": {
+    "source": {
+      "options": {
+        "cloud": "Cloud API (Dyness Open API)",
+        "endpoint": "Local endpoint (logger talks only to Home Assistant)",
+        "passthru": "Local passthru (relay to the Dyness cloud, parse a copy)",
+        "cloud_passthru": "Cloud and passthru (both, with a full traffic trace)"
+      }
+    }
+  },
+  "issues": {
+    "upstream_unreachable": {
+      "title": "Dyness logger upstream unreachable",
+      "description": "The Dyness local listener could not connect to the upstream {host}:{port} {failures} times in a row (last error: {error}). The address may be out of date. Re-add the integration with the current logger server address, or enable 'Answer the logger locally when the upstream is down' in the options."
     }
   }
 }

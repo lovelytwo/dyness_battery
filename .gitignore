@@ -1,0 +1,9 @@
+# Captures hold plaintext logger credentials, serials and the station address.
+reverse-engineering/captures/
+reverse-engineering/documents/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.venv-ha/

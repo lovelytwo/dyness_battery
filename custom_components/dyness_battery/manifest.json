@@ -1,12 +1,13 @@
 {
   "domain": "dyness_battery",
   "name": "Dyness Battery",
-  "version": "2.6.0",
-  "documentation": "https://github.com/shopf/dyness_battery",
-  "issue_tracker": "https://github.com/shopf/dyness_battery/issues",
+  "version": "2.6.0-local.1",
+  "documentation": "https://github.com/lovelytwo/dyness_battery",
+  "issue_tracker": "https://github.com/lovelytwo/dyness_battery/issues",
   "dependencies": [],
-  "codeowners": ["@shopf"],
+  "after_dependencies": ["network"],
+  "codeowners": ["@lovelytwo"],
   "requirements": ["aiohttp"],
-  "iot_class": "cloud_polling",
+  "iot_class": "local_push",
   "config_flow": true
 }

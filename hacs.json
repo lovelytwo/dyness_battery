@@ -2,5 +2,5 @@
   "name": "Dyness Battery",
   "content_in_root": false,
   "render_readme": true,
-  "homeassistant": "2023.1.0"
+  "homeassistant": "2024.1.0"
 }

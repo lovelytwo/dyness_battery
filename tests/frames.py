@@ -54,7 +54,10 @@ def bank_frame(ts_ms: int = TS_MS, soc: int = 95, voltage: float = 53.0, current
         (700, "F", current),
         (800, "S", soc),
         (1200, "S", 99),
+        (1800, "F", 19.7),
+        (2000, "F", 18.8),
         (3200, "S", status),
+        (4100, "S", 0),
     ]))
 
 

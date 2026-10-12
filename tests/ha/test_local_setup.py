@@ -124,6 +124,11 @@ async def test_endpoint_entry_publishes_sensors(socket_enabled, hass):
         registry = er.async_get(hass)
         soc_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_soc")
         assert hass.states.get(soc_id).state == "95.0"
+        for key, value in (("tempMax", "19.7"), ("tempMin", "18.8")):
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_{key}")
+            assert entity_id is not None, key
+            assert hass.states.get(entity_id).state == value
+        assert registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_alarmTotal") is not None
         module_entities = [e for e in er.async_entries_for_config_entry(registry, entry.entry_id) if BOARDS[1] in e.unique_id]
         assert module_entities
 

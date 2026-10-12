@@ -138,13 +138,13 @@ _TEMP_MAXMIN_SCHEMAS = {
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    available_data = coordinator.data or {}
-    schema = available_data.get("_schema", "unknown")
 
     # Pack-Level Sensoren — schema-basiert filtern
     known_pack_keys: set = set()
 
     def _pack_sensor_allowed(key: str, data: dict) -> bool:
+        # Lokale Einträge haben beim Setup noch keine Daten → Schema erst je Update lesen
+        schema = data.get("_schema", "unknown")
         return (
             key in ALWAYS_REGISTER
             or (

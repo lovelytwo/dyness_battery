@@ -38,7 +38,7 @@ def test_parse_upload_typed_fields_and_metadata():
     assert pts[400] == 3 and pts[800] == 95
     assert pts[600] == pytest.approx(53.0)
     assert pts[700] == pytest.approx(-17.6, abs=1e-5)
-    assert [f.type for f in upload.fields] == ["T", "S", "F", "F", "S", "S", "S"]
+    assert [f.type for f in upload.fields] == ["T", "S", "F", "F", "S", "S", "F", "F", "S", "S"]
 
 
 def test_parse_upload_rejects_trailing_bytes_and_unknown_type():

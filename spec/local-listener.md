@@ -245,6 +245,12 @@ Local frames are converted to the same dicts the cloud coordinator builds. Upstr
 - Each board frame becomes one point dict, passed to `_parse_module_points(sn, mid, pts)`. Its output goes into `module_data`. Board frames from the captures carry `10000` and `10300`, so they take the existing `is_dl5` branch: `13500` voltage, `13400` current, `13900` cycle count, `12400` BMS temperature, `12500`/`12600` cell temperatures, `10300`…`11800` cells, and `14000`/`14100` as amp-hours when above 100.
 - Values reach upstream as strings in the cloud’s format, because some upstream checks compare strings (for example `str(rt.get("3208")) == "1"`). Integers are written plain (`"95"`), floats at float32 precision (`"53.04"`, `"200.0"`), text as is.
 
+### Pack temperatures
+
+The pack-level highest and lowest cell temperatures (`tempMax`, `tempMin`) are not calculated locally. The logger sends them in every bank summary frame as fields `1800` and `2000` (all 445 bank frames in the three captures), with the module of each in `1901` and `2101`. The cloud returns the same point IDs, so upstream's schema code maps them unchanged; for Powerbox Pro that is `tempMax` = `1800` and `tempMin` = `2000`. As for cloud entries, `tempMin` is dropped when it equals `tempMax`. The board `12500`…`12800` group averages stay on the module devices and are not folded into the pack values.
+
+Upstream's sensor platform registers some pack sensors only for schemas known to set them: `tempMax` and `tempMin`, and the alarm sensors (`alarmTotal`, `alarmSys` and the other alarm flags). It used to read the schema once, when the platform was set up. A cloud entry has data at that point; `endpoint` and `passthru` entries do not (setup does not wait for the first upload), so the schema was `unknown` and those sensors were never added. The platform now reads `_schema` from the coordinator data each time it checks for new pack sensors, so they are added after the first upload.
+
 The field dictionary lists IDs such as `3201`…`3208` as synthetic: bit 0 through bit 7 of `3200`. The cloud returns those IDs as separate points. When a frame carries a bitmask field (`3200`, `3300`, `3400`, `3500`, `4000`, `17700`, `17800`, `19700`) but not its bit points, the converter adds `<id + n>` for bit `n - 1`, with value `0` or `1`. The bit order is confirmed against the cloud (`3200` = 128 with only `3208` = 1); the `cloud_passthru` comparison records keep checking it. Field and bit labels, in the trace and wherever the code needs a name, come from [`reverse-engineering/cloud_point_names.json`](../reverse-engineering/cloud_point_names.json). Local-only fields with no cloud name keep the label from `dyness_all_fields.md`.
 
 ### Local responder
@@ -383,6 +389,7 @@ Still open, tracked in the protocol notes:
 - Local and cloud responses produce the same sensor keys, because both run through upstream’s unchanged mapping.
 - Login material is omitted from logs and stored state. In the `cloud_passthru` trace the login body is the marker `redacted`.
 - An existing cloud config entry still polls the Open API.
+- An `endpoint` or `passthru` entry for a Powerbox Pro has pack `tempMax` and `tempMin` sensors (from bank fields `1800` and `2000`) and the alarm sensors after the first upload, as a cloud entry does.
 - Reconfiguring a cloud entry to `cloud_passthru`, `endpoint` or `passthru` keeps every entity ID and the pack device.
 - A new local entry's pack and module devices carry the same identifiers as a cloud entry for that battery from the first upload on, with no orphaned device.
 - Switching back to `cloud` needs no credential entry when the credentials are stored.
